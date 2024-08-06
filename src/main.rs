@@ -3,9 +3,22 @@
 
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
                      // use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-                     // use cortex_m;
 use cortex_m_rt::entry;
 use stm32l4::stm32l4x2::{self, interrupt};
+
+static mut USART1_PERIPHERAL: Option<stm32l4x2::USART1> = None;
+
+#[interrupt]
+fn USART1() {
+    // SAFETY: race condition where USART1_PERIPHERAL can be accessed before being set but this is impossible.
+    if let Some(usart1) = unsafe { USART1_PERIPHERAL.as_mut() } {
+        if usart1.isr.read().rxne().bit_is_set() {
+            let received_byte = usart1.rdr.read().rdr().bits(); // Reading RDR clears RXNE
+            while usart1.isr.read().txe().bit_is_clear() {} // Poll TXE, should already be cleared
+            usart1.tdr.write(|w| w.tdr().bits(received_byte - 32));
+        }
+    }
+}
 
 #[entry]
 fn main() -> ! {
@@ -29,18 +42,24 @@ fn main() -> ! {
     // Configure baud rate 9600
     dp.USART1.brr.write(|w| w.brr().bits(417)); // 4Mhz / 9600 approx. 417
 
-    // Enable USART, transmitter and receiver
-    dp.USART1
-        .cr1
-        .write(|w| w.te().enabled().re().enabled().ue().enabled());
+    // Enable USART, transmitter, receiver and RXNE interrupt
+    dp.USART1.cr1.write(|w| {
+        w.te()
+            .enabled()
+            .re()
+            .enabled()
+            .ue()
+            .enabled()
+            .rxneie()
+            .enabled()
+    });
 
-    let mut received_byte;
-    loop {
-        // Poll status register
-        while dp.USART1.isr.read().rxne().bit_is_clear() {}
-        received_byte = dp.USART1.rdr.read().rdr().bits();
-
-        while dp.USART1.isr.read().txe().bit_is_clear() {}
-        dp.USART1.tdr.write(|w| w.tdr().bits(received_byte - 32)); // Dumb convert uppercase
+    unsafe {
+        // Unmask NVIC USART1 global interrupt
+        cortex_m::peripheral::NVIC::unmask(stm32l4x2::Interrupt::USART1);
+        USART1_PERIPHERAL = Some(dp.USART1);
     }
+
+    #[allow(clippy::empty_loop)]
+    loop {}
 }
