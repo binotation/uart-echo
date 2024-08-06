@@ -14,7 +14,7 @@ fn USART1() {
     if let Some(usart1) = unsafe { USART1_PERIPHERAL.as_mut() } {
         if usart1.isr.read().rxne().bit_is_set() {
             let received_byte = usart1.rdr.read().rdr().bits(); // Reading RDR clears RXNE
-            while usart1.isr.read().txe().bit_is_clear() {} // Poll TXE, should already be cleared
+            while usart1.isr.read().txe().bit_is_clear() {} // Poll TXE, should already be set
             usart1.tdr.write(|w| w.tdr().bits(received_byte - 32));
         }
     }
