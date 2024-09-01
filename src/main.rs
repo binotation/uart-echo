@@ -4,19 +4,43 @@
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
                      // use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use cortex_m_rt::entry;
+use heapless::spsc::Queue;
 use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals, USART1};
 
 static mut USART1_PERIPHERAL: Option<USART1> = None;
+static mut BUFFER: Option<Queue<u16, 8>> = None;
 
 #[interrupt]
 fn USART1() {
-    // SAFETY: race condition where USART1_PERIPHERAL can be accessed before being set but this is impossible.
-    if let Some(usart1) = unsafe { USART1_PERIPHERAL.as_mut() } {
-        if usart1.isr.read().rxne().bit_is_set() {
-            let received_byte = usart1.rdr.read().rdr().bits(); // Reading RDR clears RXNE
-            while usart1.isr.read().txe().bit_is_clear() {} // Poll TXE, should already be set
-            usart1.tdr.write(|w| w.tdr().bits(received_byte - 32));
+    // SAFETY: race condition where USART1_PERIPHERAL can be accessed before being set
+    let usart1 = unsafe { USART1_PERIPHERAL.as_mut() }.unwrap();
+    let buffer = unsafe { BUFFER.as_mut() }.unwrap();
+
+    if usart1.isr.read().txe().bit_is_set() {
+        match buffer.dequeue() {
+            // Write dequeued byte
+            Some(byte) => {
+                usart1.tdr.write(|w| w.tdr().bits(byte));
+                if buffer.is_empty() {
+                    usart1.cr1.modify(|_, w| w.txeie().disabled());
+                }
+            }
+            // Buffer is empty, disable TXE interrupt
+            None => usart1.cr1.modify(|_, w| w.txeie().disabled()),
         }
+    }
+    if usart1.isr.read().rxne().bit_is_set() {
+        // Read data, this clears RXNE
+        let received_byte = usart1.rdr.read().rdr().bits();
+
+        // Queue byte - 32, do nothing if queue is full
+        if buffer.enqueue(received_byte - 32).is_ok() {
+            // Enable TXE interrupt as buffer is now non-empty
+            usart1.cr1.modify(|_, w| w.txeie().enabled());
+        }
+    }
+    if usart1.isr.read().ore().bit_is_set() {
+        usart1.icr.write(|w| w.orecf().set_bit());
     }
 }
 
@@ -44,9 +68,9 @@ fn main() -> ! {
 
     // Enable USART, transmitter, receiver and RXNE interrupt
     dp.USART1.cr1.write(|w| {
-        w.te()
+        w.re()
             .enabled()
-            .re()
+            .te()
             .enabled()
             .ue()
             .enabled()
@@ -55,6 +79,7 @@ fn main() -> ! {
     });
 
     unsafe {
+        BUFFER = Some(Queue::default());
         // Unmask NVIC USART1 global interrupt
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
         USART1_PERIPHERAL = Some(dp.USART1);
