@@ -1,6 +1,7 @@
-/* From stm32l432kc datasheet chapter 5 */
+/* From reference manual p.141 */
 MEMORY
 {
-  FLASH : ORIGIN = 0x08000000, LENGTH = 256K
-  RAM : ORIGIN = 0x20000000, LENGTH = 48K
+  /* NOTE 1 K = 1 KiBi = 1024 bytes */
+  FLASH : ORIGIN = 0x08000000, LENGTH = 2M
+  RAM : ORIGIN = 0x0A000000, LENGTH = 192K
 }

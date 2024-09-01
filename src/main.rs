@@ -1,3 +1,5 @@
+//! Use USART2.
+
 #![no_std]
 #![no_main]
 
@@ -5,37 +7,42 @@ use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch
                      // use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
-use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals, USART1};
+use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals, USART2};
 
-static mut USART1_PERIPHERAL: Option<USART1> = None;
+static mut USART2_PERIPHERAL: Option<USART2> = None;
 static mut BUFFER: Option<Queue<u16, 8>> = None;
 
 #[interrupt]
-fn USART1() {
-    // SAFETY: race condition where USART1_PERIPHERAL can be accessed before being set
-    let usart1 = unsafe { USART1_PERIPHERAL.as_mut() }.unwrap();
+fn USART2() {
+    // SAFETY: race condition where USART2_PERIPHERAL can be accessed before being set
+    let usart2 = unsafe { USART2_PERIPHERAL.as_mut() }.unwrap();
     let buffer = unsafe { BUFFER.as_mut() }.unwrap();
 
-    if usart1.isr.read().txe().bit_is_set() {
+    if usart2.isr_disabled().read().txfnf().bit_is_set() {
         match buffer.dequeue() {
             // Write dequeued byte
-            Some(byte) => usart1.tdr.write(|w| w.tdr().bits(byte)),
+            Some(byte) => {
+                usart2.tdr().write(|w| unsafe { w.tdr().bits(byte) });
+                if buffer.is_empty() {
+                    usart2.cr1_disabled().modify(|_, w| w.txfnfie().clear_bit());
+                }
+            }
             // Buffer is empty, disable TXE interrupt
-            None => usart1.cr1.modify(|_, w| w.txeie().disabled()),
+            None => usart2.cr1_disabled().modify(|_, w| w.txfnfie().clear_bit()),
         }
     }
-    if usart1.isr.read().rxne().bit_is_set() {
+    if usart2.isr_disabled().read().rxfne().bit_is_set() {
         // Read data, this clears RXNE
-        let received_byte = usart1.rdr.read().rdr().bits();
+        let received_byte = usart2.rdr().read().rdr().bits();
 
         // Queue byte - 32, do nothing if queue is full
         if buffer.enqueue(received_byte - 32).is_ok() {
             // Enable TXE interrupt as buffer is now non-empty
-            usart1.cr1.modify(|_, w| w.txeie().enabled());
+            usart2.cr1_disabled().modify(|_, w| w.txfnfie().set_bit());
         }
     }
-    if usart1.isr.read().ore().bit_is_set() {
-        usart1.icr.write(|w| w.orecf().set_bit());
+    if usart2.isr_disabled().read().ore().bit_is_set() {
+        usart2.icr().write(|w| w.orecf().set_bit());
     }
 }
 
@@ -45,39 +52,39 @@ fn main() -> ! {
 
     let dp = Peripherals::take().unwrap();
 
-    // Enable peripheral clocks - GPIOA, USART1
-    dp.RCC.ahb2enr.write(|w| w.gpioaen().set_bit());
-    dp.RCC.apb2enr.write(|w| w.usart1en().set_bit());
+    // Enable peripheral clocks - GPIOA, USART2
+    dp.RCC.ahb2enr1().write(|w| w.gpioaen().enabled());
+    dp.RCC.apb1enr1().write(|w| w.usart2en().enabled());
 
-    // Configure A9 (TX), A10 (RX) as alternate function 7
+    // Configure A2 (TX), A3 (RX) as alternate function 7
     dp.GPIOA
-        .moder
-        .write(|w| w.moder9().alternate().moder10().alternate());
+        .moder()
+        .write(|w| w.mode2().alternate().mode3().alternate());
     dp.GPIOA
-        .ospeedr
-        .write(|w| w.ospeedr9().high_speed().ospeedr10().high_speed());
-    dp.GPIOA.afrh.write(|w| w.afrh9().af7().afrh10().af7());
+        .ospeedr()
+        .write(|w| w.ospeed2().high_speed().ospeed3().high_speed());
+    dp.GPIOA.afrl().write(|w| w.afsel2().af7().afsel3().af7());
 
     // Configure baud rate 9600
-    dp.USART1.brr.write(|w| w.brr().bits(417)); // 4Mhz / 9600 approx. 417
+    dp.USART2.brr().write(|w| unsafe { w.bits(417) }); // 4Mhz / 9600 approx. 417
 
     // Enable USART, transmitter, receiver and RXNE interrupt
-    dp.USART1.cr1.write(|w| {
+    dp.USART2.cr1_disabled().write(|w| {
         w.re()
-            .enabled()
+            .set_bit()
             .te()
-            .enabled()
+            .set_bit()
             .ue()
-            .enabled()
-            .rxneie()
-            .enabled()
+            .set_bit()
+            .rxfneie()
+            .set_bit()
     });
 
     unsafe {
         BUFFER = Some(Queue::default());
-        // Unmask NVIC USART1 global interrupt
-        cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
-        USART1_PERIPHERAL = Some(dp.USART1);
+        // Unmask NVIC USART2 global interrupt
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
+        USART2_PERIPHERAL = Some(dp.USART2);
     }
 
     #[allow(clippy::empty_loop)]
