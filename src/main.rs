@@ -4,9 +4,9 @@
 use panic_halt as _; // you can put a breakpoint on `rust_begin_unwind` to catch panics
                      // use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use cortex_m_rt::entry;
-use stm32l4::stm32l4x2::{self, interrupt};
+use stm32l4::stm32l4x2::{interrupt, Interrupt, Peripherals, USART1};
 
-static mut USART1_PERIPHERAL: Option<stm32l4x2::USART1> = None;
+static mut USART1_PERIPHERAL: Option<USART1> = None;
 
 #[interrupt]
 fn USART1() {
@@ -24,7 +24,7 @@ fn USART1() {
 fn main() -> ! {
     // Device defaults to 4MHz clock
 
-    let dp = stm32l4x2::Peripherals::take().unwrap();
+    let dp = Peripherals::take().unwrap();
 
     // Enable peripheral clocks - GPIOA, USART1
     dp.RCC.ahb2enr.write(|w| w.gpioaen().set_bit());
@@ -56,7 +56,7 @@ fn main() -> ! {
 
     unsafe {
         // Unmask NVIC USART1 global interrupt
-        cortex_m::peripheral::NVIC::unmask(stm32l4x2::Interrupt::USART1);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USART1);
         USART1_PERIPHERAL = Some(dp.USART1);
     }
 
